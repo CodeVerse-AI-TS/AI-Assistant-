@@ -1,0 +1,20 @@
+# Virtual env
+venv/
+env/
+__pycache__/
+*.pyc
+
+# API keys / secrets
+.env
+config.py
+*.key
+
+# OS/IDE junk
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Vosk model (huge, don't commit it)
+vosk-model-en-us-0.22/
+model_big
+ultron_memory.db

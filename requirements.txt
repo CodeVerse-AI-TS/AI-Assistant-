@@ -1,0 +1,11 @@
+sounddevice
+vosk
+customtkinter
+python-dotenv
+google-genai
+edge-tts
+playsound==1.2.2
+pystray
+Pillow
+numpy
+soundfile
