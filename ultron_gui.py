@@ -13,6 +13,8 @@ import urllib.parse
 import sqlite3
 import ctypes
 from pathlib import Path
+import pyautogui
+import os
 
 import sounddevice as sd
 import numpy as np
@@ -658,6 +660,14 @@ def try_handle_command(text):
     if "what date" in t or "today's date" in t or "what is the date" in t or "what day is it" in t:
         today = datetime.datetime.now().strftime("%A, %B %d, %Y")
         return f"Today is {today}."
+
+    # ---- Screenshot ----
+    if "take a screenshot" in t or "screenshot" in t or "capture screen" in t:
+        screenshot = pyautogui.screenshot()
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = os.path.join(os.path.expanduser("~"), "Pictures", f"ultron_screnshot_{timestamp}.png")
+        screenshot.save(save_path)
+        return f"Screenshot saved to {save_path}"
 
     # ---- Open app or website ----
     if t.startswith("open ") or t.startswith("launch ") or t.startswith("start ") or t.startswith("run "):
