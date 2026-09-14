@@ -5,7 +5,6 @@ import asyncio
 import tempfile
 import uuid
 import subprocess
-import shutil
 import webbrowser
 import datetime
 import threading
@@ -164,6 +163,38 @@ def memory_count():
     finally:
         conn.close()
 
+# Persistent voice settings are stored in the same local SQLite database.
+def _settings_connection():
+    conn = sqlite3.connect(MEMORY_DB, timeout=10)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
+
+def get_setting(key, default=None):
+    conn = _settings_connection()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+    finally:
+        conn.close()
+
+def save_setting(key, value):
+    conn = _settings_connection()
+    try:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 def memory_context(user_text):
     rows = get_memories(user_text, limit=8)
     if not rows:
@@ -194,13 +225,15 @@ VOICE_OPTIONS = {
     "Andrew (US)": "en-US-AndrewNeural",
     "Thomas (UK)": "en-GB-ThomasNeural",
 }
-current_voice = "en-GB-RyanNeural"
-current_rate = "+10%"
-current_pitch = "-50Hz"
-robotic_filter_on = False
+saved_voice = get_setting("voice", "en-GB-RyanNeural")
+saved_rate = get_setting("rate", "+10%")
+saved_pitch = get_setting("pitch", "-50Hz")
 
-# Live output-voice amplitude. 0.0 = silent, 1.0 = loud.
-speech_level = 0.0
+# Voice settings now survive restarts.
+current_voice = saved_voice if saved_voice in VOICE_OPTIONS.values() else "en-GB-RyanNeural"
+current_rate = saved_rate if re.fullmatch(r"[+-]\d+%", saved_rate) else "+10%"
+current_pitch = saved_pitch if re.fullmatch(r"[+-]\d+Hz", saved_pitch) else "-50Hz"
+robotic_filter_on = False
 
 # Phonetic fragments to catch even when Vosk mishears "Ultron"
 WAKE_FRAGMENTS = ["ultr", "eltr", "altr", "hultr"]
@@ -751,188 +784,32 @@ def apply_robotic_filter(samples, sample_rate):
     return np.clip(result, -1.0, 1.0)
 
 
-def _ffmpeg_executable():
-    """Find an FFmpeg binary for decoding Edge-TTS MP3 output."""
-    configured = os.getenv("FFMPEG_PATH")
-    if configured and os.path.exists(configured):
-        return configured
-
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-
-    # imageio-ffmpeg bundles its own FFmpeg binary.
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return None
-
-
-def _decode_mp3_to_pcm(path):
-    """Decode the generated Edge-TTS MP3 into mono float32 PCM."""
-    ffmpeg = _ffmpeg_executable()
-    if not ffmpeg:
-        return None
-
-    try:
-        proc = subprocess.run(
-            [
-                ffmpeg, "-hide_banner", "-loglevel", "error",
-                "-i", path,
-                "-f", "f32le",
-                "-acodec", "pcm_f32le",
-                "-ac", "1",
-                "-ar", "24000",
-                "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if proc.returncode != 0 or not proc.stdout:
-            return None
-
-        return np.frombuffer(proc.stdout, dtype=np.float32), 24000
-    except Exception as exc:
-        print("AUDIO DECODE ERROR:", exc)
-        return None
-
-
-def _play_pcm_with_core_animation(samples, sample_rate):
-    """Play audio while the holographic core follows its real RMS amplitude."""
-    global speech_level
-
-    samples = np.asarray(samples, dtype=np.float32)
-    if samples.ndim > 1:
-        samples = samples.mean(axis=1)
-
-    # Normalize gently so quiet Edge-TTS lines still produce visible movement.
-    peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
-    if peak > 1.0:
-        samples = samples / peak
-
-    chunk_size = max(480, int(sample_rate * 0.025))  # ~25 FPS audio chunks
-
-    try:
-        with sd.OutputStream(
-            samplerate=sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=chunk_size,
-        ) as stream:
-            for start_idx in range(0, len(samples), chunk_size):
-                chunk = samples[start_idx:start_idx + chunk_size]
-                if len(chunk) == 0:
-                    continue
-
-                rms = float(np.sqrt(np.mean(np.square(chunk))))
-                # Boost the physical RMS into a visible 0..1 reactor level.
-                target = float(np.clip(rms * 8.0, 0.0, 1.0))
-
-                # Faster attack, slower release = natural "speaking" reactor.
-                if target > speech_level:
-                    speech_level = speech_level * 0.20 + target * 0.80
-                else:
-                    speech_level = speech_level * 0.72 + target * 0.28
-
-                stream.write(chunk)
-
-    finally:
-        speech_level = 0.0
-
-
-def _fake_voice_reactor(text):
-    """Fallback visualizer when FFmpeg is unavailable."""
-    global speech_level
-
-    duration = max(0.8, min(18.0, 0.045 * len(text) + 0.55))
-    start_time = time.perf_counter()
-
-    while True:
-        elapsed = time.perf_counter() - start_time
-        if elapsed >= duration:
-            break
-
-        # Irregular speech-like envelope based on text position.
-        phase = elapsed * (7.0 + 2.5 * np.sin(elapsed * 2.7))
-        syllable = (np.sin(phase) + 1.0) * 0.5
-        micro = (np.sin(elapsed * 23.0) + 1.0) * 0.18
-        level = 0.10 + 0.82 * (syllable ** 2) + micro
-
-        # Create small pauses at punctuation.
-        progress = elapsed / duration
-        if any(ch in text[max(0, int(progress * len(text)) - 1): int(progress * len(text)) + 1]
-               for ch in ",.;:!?"):
-            level *= 0.25
-
-        speech_level = float(np.clip(level, 0.0, 1.0))
-        time.sleep(0.025)
-
-    speech_level = 0.0
-
-
-def _speak_worker(text, done_event=None):
-    global current_state, speech_level
-
+def speak(text):
     unique_path = os.path.join(
         tempfile.gettempdir(), f"ultron_speech_{uuid.uuid4().hex}.mp3"
     )
-    speech_level = 0.0
-    app.after(0, lambda: set_status("speaking", True))
-    current_state = "speaking"
-
     try:
-        # All expensive TTS/audio work stays OFF the Tkinter main thread.
         asyncio.run(_generate_speech(text, unique_path))
 
-        decoded = _decode_mp3_to_pcm(unique_path)
-        if decoded is not None:
-            samples, sample_rate = decoded
-
-            if robotic_filter_on:
-                samples = apply_robotic_filter(samples, sample_rate)
-
-            _play_pcm_with_core_animation(samples, sample_rate)
+        if robotic_filter_on:
+            samples, sample_rate = sf.read(unique_path, dtype="float32")
+            if samples.ndim > 1:
+                samples = samples.mean(axis=1)  # mix down to mono if needed
+            processed = apply_robotic_filter(samples, sample_rate)
+            sd.play(processed, sample_rate)
+            sd.wait()
         else:
-            # Fallback keeps the reactor animated while blocking playback is also off the UI thread.
-            fallback_anim = threading.Thread(
-                target=_fake_voice_reactor, args=(text,), daemon=True
-            )
-            fallback_anim.start()
-            try:
-                playsound(unique_path)
-            finally:
-                fallback_anim.join(timeout=2.0)
-
+            playsound(unique_path)
     except Exception as e:
         print("SPEECH ERROR:", e)
+        # Fall back to plain playback if filtering failed for any reason
         try:
-            if os.path.exists(unique_path):
-                playsound(unique_path)
+            playsound(unique_path)
         except Exception:
             pass
     finally:
-        speech_level = 0.0
-        current_state = "ready"
-        app.after(0, lambda: set_status("ready", False))
-        if done_event is not None:
-            done_event.set()
         if os.path.exists(unique_path):
-            try:
-                os.remove(unique_path)
-            except OSError:
-                pass
-
-
-def speak(text, wait=False):
-    """Speak without freezing the UI. Use wait=True only where speech must finish first."""
-    done_event = threading.Event() if wait else None
-    threading.Thread(
-        target=_speak_worker, args=(text, done_event), daemon=True, name="UltronSpeech"
-    ).start()
-    if done_event is not None:
-        done_event.wait()
+            os.remove(unique_path)
 
 
 # ---------- Wake word background listener ----------
@@ -965,7 +842,7 @@ def wake_word_loop(stop_event):
             app.after(0, lambda: set_status("listening", True))
             time.sleep(0.25)
             app.after(0, lambda: add_turn("Ultron", "Yes?", system=True))
-            speak("Yes?", wait=True)
+            speak("Yes?")
             command_text = listen_after_wake()
             if command_text:
                 app.after(0, lambda t=command_text: handle_message(t))
@@ -1284,9 +1161,7 @@ def draw_core():
     if current_state == "listening":
         pulse += 10*abs(np.sin(t*0.25))
     elif current_state == "speaking":
-        # Real voice amplitude from speech_level drives the reactor size.
-        pulse += 4*abs(np.sin(t*0.34))
-        pulse += 42 * speech_level
+        pulse += 13*abs(np.sin(t*0.34))
 
     r = 37 + pulse
     for rr, fade in [(r*2.0, .90), (r*1.55, .72), (r*1.20, .45)]:
@@ -1330,7 +1205,7 @@ def animate_core():
     global animation_frame
     animation_frame += 1
     draw_core()
-    app.after(25, animate_core)
+    app.after(40, animate_core)
 
 # ---------- RIGHT: diagnostics ----------
 diag = card(right)
@@ -1500,11 +1375,13 @@ ctk.CTkLabel(
     settings_inner, text="VOICE", font=("Consolas", 8, "bold"), text_color=MUTED
 ).pack(side="left", padx=(4, 7))
 
-voice_var = ctk.StringVar(value="Ryan (UK, deep)")
+voice_label = next((name for name, value in VOICE_OPTIONS.items() if value == current_voice), "Ryan (UK, deep)")
+voice_var = ctk.StringVar(value=voice_label)
 
 def on_voice_change(choice):
     global current_voice
     current_voice = VOICE_OPTIONS[choice]
+    save_setting("voice", current_voice)
 
 voice_dropdown = ctk.CTkOptionMenu(
     settings_inner, values=list(VOICE_OPTIONS.keys()),
@@ -1532,13 +1409,14 @@ ctk.CTkLabel(
 ).pack(side="left")
 
 rate_value_label = ctk.CTkLabel(
-    settings_inner, text="+0%", font=("Consolas", 8), text_color=CYAN, width=35
+    settings_inner, text=current_rate, font=("Consolas", 8), text_color=CYAN, width=35
 )
 
 def on_rate_change(value):
     global current_rate
     pct = int(float(value))
     current_rate = f"{pct:+d}%"
+    save_setting("rate", current_rate)
     rate_value_label.configure(text=current_rate)
 
 rate_slider = ctk.CTkSlider(
@@ -1546,7 +1424,7 @@ rate_slider = ctk.CTkSlider(
     fg_color=PANEL_2, progress_color=VIOLET,
     button_color=VIOLET, button_hover_color=VIOLET, width=120
 )
-rate_slider.set(10)
+rate_slider.set(int(current_rate.rstrip("%")))
 rate_slider.pack(side="left", padx=6)
 rate_value_label.pack(side="left", padx=(0, 15))
 
@@ -1555,13 +1433,14 @@ ctk.CTkLabel(
 ).pack(side="left")
 
 pitch_value_label = ctk.CTkLabel(
-    settings_inner, text="-15Hz", font=("Consolas", 8), text_color=CYAN, width=40
+    settings_inner, text=current_pitch, font=("Consolas", 8), text_color=CYAN, width=40
 )
 
 def on_pitch_change(value):
     global current_pitch
     hz = int(float(value))
     current_pitch = f"{hz:+d}Hz"
+    save_setting("pitch", current_pitch)
     pitch_value_label.configure(text=current_pitch)
 
 pitch_slider = ctk.CTkSlider(
@@ -1569,8 +1448,7 @@ pitch_slider = ctk.CTkSlider(
     fg_color=PANEL_2, progress_color=VIOLET,
     button_color=VIOLET, button_hover_color=VIOLET, width=120
 )
-pitch_slider.set(10)
-pitch_value_label.configure(text="+10%")
+pitch_slider.set(int(current_pitch.rstrip("Hz")))
 pitch_slider.pack(side="left", padx=6)
 pitch_value_label.pack(side="left")
 
