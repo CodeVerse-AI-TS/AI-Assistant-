@@ -15,6 +15,7 @@ import ctypes
 from pathlib import Path
 import pyautogui
 import os
+import wikipedia
 
 import sounddevice as sd
 import numpy as np
@@ -732,7 +733,7 @@ def try_handle_command(text):
             url = target if target.startswith("http") else f"https://{target}"
             webbrowser.open(url)
             return f"Opening {target}."
-
+        
         return None  # unrecognized target, let Gemini try to respond instead
 
     if t.startswith("search web for "):
@@ -741,8 +742,22 @@ def try_handle_command(text):
             webbrowser.open("https://www.google.com/search?q=" + urllib.parse.quote(query))
             return f"Searching the web for {query}."
 
-    return None  # not a recognized command
+    # ---- Wikipedia Summary ----
+    if t.startswith("who is") or t.startswith("what is") or t.startswith("tell me about"):
+        query = t.replace("who is", "").replace("what is", "").replace("tell me about", "").strip()
+        if query:
+            try:
+                summary = wikipedia.summary(query, sentences=2)
+                return summary
+            except wikipedia.exceptions.DisambiguationError as e:
+                return f"That could mean a few things: {', '.join(e.options[:5])}. Can you be more specific?"
+            except wikipedia.exceptions.PageError:
+                return f"I couldn't find anything on Wikipedia for {query}."
+            except Exception as e:
+                print(f"[Wikipedia debug] {type(e).__name__}: {e}")
+                return "Something went wrong looking that up."
 
+    return None  # not a recognized command
 
 def think(user_text):
     try:
