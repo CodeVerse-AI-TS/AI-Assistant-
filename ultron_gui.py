@@ -698,6 +698,12 @@ def try_handle_command(text):
         today = datetime.datetime.now().strftime("%A, %B %d, %Y")
         return f"Today is {today}."
 
+    # ---- Volume Control ----
+    if "volume up" in t or "increase volume" in t or "turn up the volume" in t:
+        pyautogui.press("volumeup")
+        return "Volume increased."
+    ...
+
     # ---- Screenshot ----
     if "take a screenshot" in t or "screenshot" in t or "capture screen" in t:
         screenshot = pyautogui.screenshot()
@@ -1081,10 +1087,10 @@ def set_status(text, active=False):
         text_color=CYAN if active or text != "ready" else MUTED
     )
 
-def draw_core_grid(c, w, h):
-    for x in range(0, w, 35):
+def draw_core_grid(c, w, h, spacing):
+    for x in range(0, w, spacing):
         c.create_line(x, 0, x, h, fill="#0e0b1c")
-    for y in range(0, h, 35):
+    for y in range(0, h, spacing):
         c.create_line(0, y, w, y, fill="#0e0b1c")
 
 def tick_ring(c, cx, cy, radius, rotation, count, color):
@@ -1099,14 +1105,15 @@ def bracket(c, x, y, sx, sy):
     c.create_line(x, y, x+sx*18, y, fill=CYAN_DIM, width=2)
     c.create_line(x, y, x, y+sy*18, fill=CYAN_DIM, width=2)
 
-def draw_spine(c, cx, cy, t):
+def draw_spine(c, cx, cy, t, scale):
     # A more recognizable synthetic vertebra/spine structure.
-    for i, y in enumerate(np.linspace(cy-120, cy+120, 15)):
-        wobble = np.sin(t*0.035 + i*0.55) * 7
+    for i, y in enumerate(np.linspace(cy - 120 * scale, cy + 120 * scale, 15)):
+        wobble = np.sin(t*0.035 + i*0.55) * 7 * scale
         x = cx + wobble
-        width = 25 if i < 5 or i > 10 else 31
+        width = (25 if i < 5 or i > 10 else 31) * scale
+        half_height = max(3, 7 * scale)
         c.create_oval(
-            x-width, y-7, x+width, y+7,
+            x-width, y-half_height, x+width, y+half_height,
             outline=blend(VIOLET, BG_2, 0.18),
             width=1
         )
@@ -1114,19 +1121,26 @@ def draw_spine(c, cx, cy, t):
             x-width+4, y, x+width-4, y,
             fill=VIOLET_BRIGHT if i % 2 == 0 else VIOLET_DIM
         )
-        c.create_oval(x-5, y-5, x+5, y+5, fill=CYAN_DIM, outline="")
+        node = max(2, 5 * scale)
+        c.create_oval(x-node, y-node, x+node, y+node, fill=CYAN_DIM, outline="")
 
 def draw_core():
+    # Render only after Tk has calculated the canvas's on-screen size.
+    # This prevents a fixed 610x470 drawing from being clipped on resize.
+    w, h = core_canvas.winfo_width(), core_canvas.winfo_height()
+    if w <= 1 or h <= 1:
+        return
+
     core_canvas.delete("all")
-    w = max(core_canvas.winfo_width(), CORE_W)
-    h = max(core_canvas.winfo_height(), CORE_H)
     cx, cy = w/2, h/2
     t = animation_frame
+    scale = max(0.35, min(w / CORE_W, h / CORE_H))
 
-    draw_core_grid(core_canvas, w, h)
+    draw_core_grid(core_canvas, w, h, max(16, int(35 * scale)))
 
     # Faint circular target geometry
     for rr in (78, 112, 145):
+        rr *= scale
         core_canvas.create_oval(
             cx-rr, cy-rr, cx+rr, cy+rr,
             outline=blend(VIOLET_DIM, BG_2, 0.15), width=1
@@ -1134,27 +1148,27 @@ def draw_core():
 
     # Rotating rings
     ring_col = CYAN if current_state == "listening" else VIOLET
-    tick_ring(core_canvas, cx, cy, 164, t*0.006, 72, VIOLET_DIM)
-    tick_ring(core_canvas, cx, cy, 150, -t*0.010, 48, ring_col)
+    tick_ring(core_canvas, cx, cy, 164 * scale, t*0.006, 72, VIOLET_DIM)
+    tick_ring(core_canvas, cx, cy, 150 * scale, -t*0.010, 48, ring_col)
 
     # Scanner sweep
     sweep = (t*3.5) % 360
     rad = np.deg2rad(sweep)
-    x2, y2 = cx + 180*np.cos(rad), cy + 180*np.sin(rad)
+    x2, y2 = cx + 180*scale*np.cos(rad), cy + 180*scale*np.sin(rad)
     core_canvas.create_line(cx, cy, x2, y2, fill=CYAN_DIM, width=1)
 
     # Rotating arcs
     core_canvas.create_arc(
-        cx-185, cy-185, cx+185, cy+185,
+        cx-185*scale, cy-185*scale, cx+185*scale, cy+185*scale,
         start=sweep, extent=52, style="arc", outline=CYAN, width=2
     )
     core_canvas.create_arc(
-        cx-185, cy-185, cx+185, cy+185,
+        cx-185*scale, cy-185*scale, cx+185*scale, cy+185*scale,
         start=sweep+180, extent=38, style="arc", outline=MAGENTA, width=1
     )
 
     # Central holographic body
-    draw_spine(core_canvas, cx, cy, t)
+    draw_spine(core_canvas, cx, cy, t, scale)
 
     # Core pulse
     pulse = 5*np.sin(t*0.09)
@@ -1163,7 +1177,7 @@ def draw_core():
     elif current_state == "speaking":
         pulse += 13*abs(np.sin(t*0.34))
 
-    r = 37 + pulse
+    r = (37 + pulse) * scale
     for rr, fade in [(r*2.0, .90), (r*1.55, .72), (r*1.20, .45)]:
         core_canvas.create_oval(
             cx-rr, cy-rr, cx+rr, cy+rr,
@@ -1181,7 +1195,7 @@ def draw_core():
     )
 
     # Targeting brackets
-    off = 205
+    off = 205 * scale
     bracket(core_canvas, cx-off, cy-off, 1, 1)
     bracket(core_canvas, cx+off, cy-off, -1, 1)
     bracket(core_canvas, cx-off, cy+off, 1, -1)
@@ -1193,7 +1207,7 @@ def draw_core():
         ("NEURAL_DENSITY  98.7%", 18, h-25),
         ("CORE_LOCK", w-108, 22),
         ("NTX / 04", w-76, h-25),
-        ("SCAN", cx+175, cy-12),
+        ("SCAN", cx+175*scale, cy-12),
     ]
     for text, x, y in annotations:
         core_canvas.create_text(
@@ -1203,8 +1217,13 @@ def draw_core():
 
 def animate_core():
     global animation_frame
-    animation_frame += 1
-    draw_core()
+    try:
+        if not core_canvas.winfo_exists():
+            return
+        animation_frame += 1
+        draw_core()
+    except tk.TclError:
+        return
     app.after(40, animate_core)
 
 # ---------- RIGHT: diagnostics ----------
@@ -1280,7 +1299,20 @@ def on_send():
 
 def on_talk():
     set_status("listening", True)
-    heard = listen(duration=7)
+    mic_btn.configure(state="disabled")
+    threading.Thread(target=_listen_from_button, daemon=True).start()
+
+def _listen_from_button():
+    """Record off the Tk thread so the HUD keeps animating while listening."""
+    try:
+        heard = listen(duration=7)
+    except Exception as exc:
+        print("MIC ERROR:", exc)
+        heard = ""
+    app.after(0, lambda: _finish_button_listen(heard))
+
+def _finish_button_listen(heard):
+    mic_btn.configure(state="normal")
     if not heard:
         set_status("ready", False)
         return
@@ -1308,6 +1340,8 @@ send_btn = ctk.CTkButton(
     font=("Consolas", 14, "bold"), corner_radius=3
 )
 send_btn.pack(side="left")
+
+
 
 # ---------- Wake + settings row ----------
 control_row = ctk.CTkFrame(right, fg_color="transparent")
@@ -1394,8 +1428,11 @@ voice_dropdown.pack(side="left", padx=(0, 12))
 
 def test_voice():
     set_status("speaking", True)
+    threading.Thread(target=_test_voice_worker, daemon=True).start()
+
+def _test_voice_worker():
     speak("Ultron neural interface online.")
-    set_status("ready", False)
+    app.after(0, lambda: set_status("ready", False))
 
 ctk.CTkButton(
     settings_inner, text="TEST", width=48, height=26, command=test_voice,
@@ -1454,42 +1491,59 @@ pitch_value_label.pack(side="left")
 
 # ---------- Message handler ----------
 def handle_message(user_text):
+    """Start a response without blocking Tk's animation event loop."""
     global is_busy
     user_text = user_text.strip()
-    if not user_text:
+    if not user_text or is_busy:
         return
 
     is_busy = True
-    try:
-        add_turn("You", user_text)
-        conversation_history.append(("User", user_text))
-        conversation_history[:] = conversation_history[-CONVERSATION_LIMIT:]
-        set_status("thinking", True)
+    add_turn("You", user_text)
+    conversation_history.append(("User", user_text))
+    conversation_history[:] = conversation_history[-CONVERSATION_LIMIT:]
+    set_status("thinking", True)
+    threading.Thread(target=_prepare_response, args=(user_text,), daemon=True).start()
 
+def _prepare_response(user_text):
+    """Run local commands and Gemini I/O away from the Tk thread."""
+    try:
         local_reply = try_handle_command(user_text)
         reply = local_reply if local_reply is not None else think(user_text)
-        conversation_history.append(("Ultron", reply))
-        conversation_history[:] = conversation_history[-CONVERSATION_LIMIT:]
+    except Exception as exc:
+        print("RESPONSE ERROR:", exc)
+        reply = "Sorry, something went wrong while preparing that response."
+    app.after(0, lambda: _show_response(reply))
 
-        # Refresh the HUD counter when it exists.
-        try:
-            memory_counter_label.configure(text=f"LOCAL MEMORY  {memory_count()}")
-        except Exception:
-            pass
+def _show_response(reply):
+    """Update widgets only from the Tk thread, then play speech in a worker."""
+    conversation_history.append(("Ultron", reply))
+    conversation_history[:] = conversation_history[-CONVERSATION_LIMIT:]
+    try:
+        memory_counter_label.configure(text=f"LOCAL MEMORY  {memory_count()}")
+    except Exception:
+        pass
+    add_turn("Ultron", reply)
+    set_status("speaking", True)
+    threading.Thread(target=_speak_response, args=(reply,), daemon=True).start()
 
-        add_turn("Ultron", reply)
-        set_status("speaking", True)
+def _speak_response(reply):
+    global is_busy
+    try:
         speak(reply)
-        set_status("ready", False)
     finally:
         is_busy = False
+        app.after(0, lambda: set_status("ready", False))
 
 # ---------- Startup ----------
 add_turn("Ultron", "Neural interface synchronized. Say 'Ultron' when you need me.")
 set_status("ready", False)
-animate_core()
-draw_wave()
-tick_clock()
+
+# Wait for Tk to calculate the widget sizes.  On some systems, drawing before
+# mainloop creates the first core frame on a 1x1 canvas and leaves it blank or
+# clipped until a later redraw.
+app.after_idle(animate_core)
+app.after_idle(draw_wave)
+app.after_idle(tick_clock)
 
 # JARVIS-style: begin listening for the wake word automatically unless disabled in .env.
 if AUTO_WAKE:
