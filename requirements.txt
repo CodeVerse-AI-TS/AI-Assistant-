@@ -1,3 +1,4 @@
+# --- Existing ULTRON dependencies ---
 sounddevice
 vosk
 customtkinter
@@ -9,3 +10,11 @@ pystray
 Pillow
 numpy
 soundfile
+
+# --- NOVA dependencies ---
+faster-whisper
+keyboard
+pygame-ce
+requests
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

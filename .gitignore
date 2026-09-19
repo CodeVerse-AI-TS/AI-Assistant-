@@ -1,20 +1,12 @@
-# Virtual env
-venv/
-env/
+# Personal conversation history — don't publish your actual chats with NOVA
+nova_history.json
+
+# Python
 __pycache__/
 *.pyc
+venv/
+.venv/
 
-# API keys / secrets
-.env
-config.py
-*.key
-
-# OS/IDE junk
-.vscode/
+# OS
 .DS_Store
 Thumbs.db
-
-# Vosk model (huge, don't commit it)
-vosk-model-en-us-0.22/
-model_big
-ultron_memory.db
