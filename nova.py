@@ -271,6 +271,34 @@ def speak(text: str):
 
 
 # ---------------- WORKER THREAD ----------------
+def process_message(app, text: str, speak_reply: bool = True):
+    """Handles one user message (from voice OR typed text): checks for quit,
+    checks commands, falls back to the LLM, updates the UI, and speaks the reply."""
+    ui_queue.put(("you", text))
+
+    if text.lower() in ("quit", "exit", "shut down", "goodbye"):
+        ui_queue.put(("nova", "Going offline."))
+        app.set_status("Offline")
+        speak("Going offline.")
+        return True  # signals "should exit"
+
+    app.set_status("Thinking...")
+    command_reply = handle_command(text)
+    if command_reply is not None:
+        chat_history.append({"role": "user", "content": text})
+        chat_history.append({"role": "assistant", "content": command_reply})
+        save_history()
+        reply = command_reply
+    else:
+        reply = ask_nova(text)
+
+    ui_queue.put(("nova", reply))
+    if speak_reply:
+        app.set_status("Speaking...")
+        speak(reply)
+    return False
+
+
 def worker_loop(app):
     app.set_status("Loading Whisper model...")
     whisper = WhisperModel(WHISPER_MODEL_SIZE, device=WHISPER_DEVICE, compute_type="int8_float16")
@@ -280,7 +308,7 @@ def worker_loop(app):
         sender = "you" if msg["role"] == "user" else "nova"
         ui_queue.put((sender, msg["content"]))
 
-    app.set_status("Ready \u2014 hold SPACE to talk")
+    app.set_status("Ready \u2014 hold SPACE to talk, or type below")
     ui_queue.put(("nova", "Nova online."))
     speak("Nova online.")
 
@@ -298,28 +326,19 @@ def worker_loop(app):
             app.set_status("Didn't catch that \u2014 hold SPACE to talk")
             continue
 
-        ui_queue.put(("you", text))
-
-        if text.lower() in ("quit", "exit", "shut down", "goodbye"):
-            ui_queue.put(("nova", "Going offline."))
-            app.set_status("Offline")
-            speak("Going offline.")
+        should_exit = process_message(app, text)
+        if should_exit:
             break
 
-        app.set_status("Thinking...")
-        command_reply = handle_command(text)
-        if command_reply is not None:
-            # Commands bypass the LLM, but still get saved so the transcript is complete
-            chat_history.append({"role": "user", "content": text})
-            chat_history.append({"role": "assistant", "content": command_reply})
-            save_history()
-            reply = command_reply
-        else:
-            reply = ask_nova(text)
+        app.set_status("Hold SPACE to talk, or type below")
 
-        ui_queue.put(("nova", reply))
-        app.set_status("Speaking...")
-        speak(reply)
+
+def text_worker(app, text: str):
+    """Runs in its own thread so typed messages don't freeze the GUI while
+    the LLM or a command is processing."""
+    app.set_status("Thinking...")
+    process_message(app, text)
+    app.set_status("Ready \u2014 hold SPACE to talk, or type below")
 
 
 # ---------------- GUI ----------------
@@ -338,6 +357,22 @@ class NovaApp(ctk.CTk):
             self, text="Starting up...", font=("Segoe UI", 13), text_color="#8ab4f8"
         )
         self.status_label.pack(pady=(12, 4))
+
+        # Text input row — pack this at the BOTTOM first, so it reserves its
+        # space before the scrollable chat frame expands to fill everything else.
+        self.input_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.input_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+
+        self.text_entry = ctk.CTkEntry(
+            self.input_frame, placeholder_text="Type a message to NOVA..."
+        )
+        self.text_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.text_entry.bind("<Return>", self._on_send)
+
+        self.send_button = ctk.CTkButton(
+            self.input_frame, text="Send", width=70, command=self._on_send
+        )
+        self.send_button.pack(side="right")
 
         self.chat_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.chat_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -364,6 +399,14 @@ class NovaApp(ctk.CTk):
         self.space_held = False
         self.space_release_event.set()
 
+    def _on_send(self, event=None):
+        text = self.text_entry.get().strip()
+        if not text:
+            return
+        self.text_entry.delete(0, "end")
+        # Run in a background thread so a slow LLM/command doesn't freeze the window
+        threading.Thread(target=text_worker, args=(self, text), daemon=True).start()
+
     def set_status(self, text: str):
         self.after(0, lambda: self.status_label.configure(text=text))
 
@@ -382,6 +425,7 @@ class NovaApp(ctk.CTk):
             pady=8,
         )
         bubble.pack(anchor="e" if is_user else "w", pady=4, padx=6)
+        self.chat_frame.update_idletasks()  # force layout to recalculate before scrolling
         self.chat_frame._parent_canvas.yview_moveto(1.0)
 
     def poll_ui_queue(self):
