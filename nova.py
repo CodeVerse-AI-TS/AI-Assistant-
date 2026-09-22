@@ -33,6 +33,7 @@ import keyboard
 import edge_tts
 import pygame
 import customtkinter as ctk
+import tkinter as tk
 from faster_whisper import WhisperModel
 
 # ---- Make Windows find the NVIDIA cuBLAS/cuDNN DLLs installed via pip ----
@@ -342,40 +343,93 @@ def text_worker(app, text: str):
 
 
 # ---------------- GUI ----------------
+# Palette — a dark "system readout" look built around NOVA's own concept
+# (Nocturnal Offline Voice Anomaly), not a default chat-app blue theme.
+BG_PRIMARY = "#0A0E17"        # near-black navy window background
+BG_PANEL = "#10141F"          # slightly lighter panel background (top row, input row)
+BUBBLE_NOVA = "#1B2233"       # NOVA's messages — dark slate panel
+BUBBLE_NOVA_BORDER = "#3A3F63"  # subtle violet-grey border, like a HUD panel edge
+BUBBLE_USER = "#6C5CE7"       # your messages — solid violet
+TEXT_PRIMARY = "#E8EAF0"      # off-white body text
+TEXT_DIM = "#7A8099"          # dimmed secondary text
+ACCENT = "#7C5CFC"            # primary accent (buttons, focus)
+ACCENT_HOVER = "#6A4CE0"
+STATUS_COLORS = {
+    "idle": "#5A6079",
+    "listening": "#7C5CFC",
+    "thinking": "#E0A64B",
+    "speaking": "#3FD6B5",
+    "offline": "#E06464",
+}
+
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("blue")  # base theme; we override specific widget colors below
 
 
 class NovaApp(ctk.CTk):
+    COMPACT_SIZE = "420x600"
+    FULL_SIZE = "900x700"
+    COMPACT_WRAP = 280
+    FULL_WRAP = 640
+    COMPACT_FONT_SIZE = 13
+    FULL_FONT_SIZE = 22
+
     def __init__(self):
         super().__init__()
         self.title("N.O.V.A.")
-        self.geometry("420x600")
+        self.geometry(self.COMPACT_SIZE)
         self.minsize(360, 480)
+        self.configure(fg_color=BG_PRIMARY)
+        self.is_compact = True
+        self.bubble_wraplength = self.COMPACT_WRAP
+        self.bubble_font_size = self.COMPACT_FONT_SIZE
+
+        # Top row: status dot + status text + compact/full toggle
+        self.top_row = ctk.CTkFrame(self, fg_color=BG_PANEL, corner_radius=10)
+        self.top_row.pack(fill="x", padx=10, pady=(10, 4))
+
+        self.status_dot = tk.Canvas(
+            self.top_row, width=12, height=12, bg=BG_PANEL, highlightthickness=0
+        )
+        self.status_dot.pack(side="left", padx=(12, 6), pady=10)
+        self._dot_id = self.status_dot.create_oval(2, 2, 10, 10, fill=STATUS_COLORS["idle"], outline="")
 
         self.status_label = ctk.CTkLabel(
-            self, text="Starting up...", font=("Segoe UI", 13), text_color="#8ab4f8"
+            self.top_row, text="STARTING UP", font=("Consolas", 12),
+            text_color=TEXT_DIM, anchor="w",
         )
-        self.status_label.pack(pady=(12, 4))
+        self.status_label.pack(side="left", expand=True, fill="x", pady=10)
+
+        self.size_toggle_button = ctk.CTkButton(
+            self.top_row, text="⤢ Expand", width=90, height=26,
+            font=("Segoe UI", 11), fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            text_color="white", corner_radius=8, command=self._toggle_window_size,
+        )
+        self.size_toggle_button.pack(side="right", padx=10, pady=8)
 
         # Text input row — pack this at the BOTTOM first, so it reserves its
         # space before the scrollable chat frame expands to fill everything else.
-        self.input_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.input_frame = ctk.CTkFrame(self, fg_color=BG_PANEL, corner_radius=10)
         self.input_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
 
         self.text_entry = ctk.CTkEntry(
-            self.input_frame, placeholder_text="Type a message to NOVA..."
+            self.input_frame, placeholder_text="Type a message to NOVA...",
+            fg_color=BG_PRIMARY, border_color=BUBBLE_NOVA_BORDER, border_width=1,
+            text_color=TEXT_PRIMARY, corner_radius=8, height=36,
         )
-        self.text_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.text_entry.pack(side="left", fill="x", expand=True, padx=10, pady=10)
         self.text_entry.bind("<Return>", self._on_send)
 
         self.send_button = ctk.CTkButton(
-            self.input_frame, text="Send", width=70, command=self._on_send
+            self.input_frame, text="Send", width=70, height=36,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="white",
+            corner_radius=8, command=self._on_send,
         )
-        self.send_button.pack(side="right")
+        self.send_button.pack(side="right", padx=(0, 10), pady=10)
 
         self.chat_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.chat_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.chat_frame.pack(fill="both", expand=True, padx=10, pady=6)
+        self.after(50, lambda: self._bind_scroll(self.chat_frame))
 
         # Push-to-talk state — tied to this window's own key events (reliable,
         # no OS-level permissions needed) instead of a global keyboard hook.
@@ -387,6 +441,23 @@ class NovaApp(ctk.CTk):
         self.focus_force()  # make sure this window has keyboard focus on launch
 
         self.after(100, self.poll_ui_queue)
+
+    def _toggle_window_size(self):
+        self.is_compact = not self.is_compact
+        if self.is_compact:
+            self.geometry(self.COMPACT_SIZE)
+            self.bubble_wraplength = self.COMPACT_WRAP
+            self.bubble_font_size = self.COMPACT_FONT_SIZE
+            self.size_toggle_button.configure(text="⤢ Expand")
+        else:
+            self.geometry(self.FULL_SIZE)
+            self.bubble_wraplength = self.FULL_WRAP
+            self.bubble_font_size = self.FULL_FONT_SIZE
+            self.size_toggle_button.configure(text="⤡ Compact")
+        # Resize existing bubbles (wrap width AND font) to match the new window size
+        new_font = ("Segoe UI", self.bubble_font_size)
+        for bubble in self.chat_frame.winfo_children():
+            bubble.configure(wraplength=self.bubble_wraplength, font=new_font)
 
     def _on_space_press(self, event):
         # Windows auto-repeats KeyPress while held — only react to the first one
@@ -408,25 +479,70 @@ class NovaApp(ctk.CTk):
         threading.Thread(target=text_worker, args=(self, text), daemon=True).start()
 
     def set_status(self, text: str):
-        self.after(0, lambda: self.status_label.configure(text=text))
+        # Infer a HUD-style state color from the status text so the dot next
+        # to it reflects what NOVA's actually doing.
+        lowered = text.lower()
+        if "speaking" in lowered:
+            state = "speaking"
+        elif "thinking" in lowered or "transcribing" in lowered:
+            state = "thinking"
+        elif "hold" in lowered or "talk" in lowered:
+            state = "listening"
+        elif "offline" in lowered:
+            state = "offline"
+        else:
+            state = "idle"
+
+        def update():
+            self.status_label.configure(text=text.upper())
+            self.status_dot.itemconfig(self._dot_id, fill=STATUS_COLORS[state])
+
+        self.after(0, update)
 
     def add_bubble(self, sender: str, text: str):
         is_user = sender == "you"
         bubble = ctk.CTkLabel(
             self.chat_frame,
             text=text,
-            wraplength=280,
+            wraplength=self.bubble_wraplength,
             justify="left",
-            font=("Segoe UI", 13),
-            fg_color="#2b6cb0" if is_user else "#333333",
-            text_color="white",
+            font=("Segoe UI", self.bubble_font_size),
+            fg_color=BUBBLE_USER if is_user else BUBBLE_NOVA,
+            text_color="white" if is_user else TEXT_PRIMARY,
             corner_radius=14,
             padx=12,
             pady=8,
+            **({} if is_user else {"border_width": 1, "border_color": BUBBLE_NOVA_BORDER}),
         )
         bubble.pack(anchor="e" if is_user else "w", pady=4, padx=6)
+
+        # CustomTkinter's scrollable frame only catches scroll/touchpad events
+        # over empty space by default — bind them on each bubble too, so
+        # scrolling works no matter where the cursor/fingers are over the chat.
+        self._bind_scroll(bubble)
+
         self.chat_frame.update_idletasks()  # force layout to recalculate before scrolling
         self.chat_frame._parent_canvas.yview_moveto(1.0)
+
+    def _bind_scroll(self, widget):
+        widget.bind("<MouseWheel>", self._on_mousewheel)  # Windows/macOS wheel + most touchpads
+        widget.bind("<Button-4>", self._on_mousewheel)     # Linux scroll up
+        widget.bind("<Button-5>", self._on_mousewheel)     # Linux scroll down
+
+    def _on_mousewheel(self, event):
+        canvas = self.chat_frame._parent_canvas
+        if getattr(event, "num", None) == 4:
+            canvas.yview_scroll(-1, "units")
+        elif getattr(event, "num", None) == 5:
+            canvas.yview_scroll(1, "units")
+        else:
+            # Precision touchpads send many small delta values (not always
+            # multiples of 120 like a physical wheel) — dividing by 120 rounds
+            # most of them down to 0, which reads as laggy/unresponsive.
+            # Scrolling a fixed step per event, using just the direction, feels
+            # smooth on both touchpads and wheels.
+            direction = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(direction, "units")
 
     def poll_ui_queue(self):
         try:
